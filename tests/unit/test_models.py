@@ -40,15 +40,17 @@ class TestMigrationRecord:
             version="20240101_120000",
             name="test_migration",
             applied_at=now,
-            status=MigrationStatus.PENDING
+            status=MigrationStatus.PENDING,
+            checksum="abc123",
+            execution_time=0.5
         )
         
         assert record.version == "20240101_120000"
         assert record.name == "test_migration"
         assert record.applied_at == now
         assert record.status == MigrationStatus.PENDING
-        assert record.checksum is None
-        assert record.execution_time is None
+        assert record.checksum == "abc123"
+        assert record.execution_time == 0.5
         assert record.error_message is None
         assert record.rollback_sql is None
     
@@ -83,6 +85,8 @@ class TestMigrationRecord:
             name="failed_migration",
             applied_at=now,
             status=MigrationStatus.FAILED,
+            checksum="def456",
+            execution_time=1.2,
             error_message="Table already exists"
         )
         
@@ -105,7 +109,9 @@ class TestMigrationRecord:
                 version=f"20240101_12000{status.value[0]}",
                 name=f"test_{status.value}",
                 applied_at=now,
-                status=status
+                status=status,
+                checksum="test123",
+                execution_time=1.0
             )
             assert record.status == status
     
@@ -119,6 +125,7 @@ class TestMigrationRecord:
             name="test1",
             applied_at=now,
             status=MigrationStatus.APPLIED,
+            checksum="check1",
             execution_time=5
         )
         assert record1.execution_time == 5
@@ -129,19 +136,21 @@ class TestMigrationRecord:
             name="test2",
             applied_at=now,
             status=MigrationStatus.APPLIED,
+            checksum="check2",
             execution_time=2.5
         )
         assert record2.execution_time == 2.5
         
-        # Test with None
+        # Test with int (since execution_time is required, we can't test None)
         record3 = MigrationRecord(
             version="20240101_120002",
             name="test3",
             applied_at=now,
             status=MigrationStatus.PENDING,
-            execution_time=None
+            checksum="check3",
+            execution_time=0.0
         )
-        assert record3.execution_time is None
+        assert record3.execution_time == 0.0
     
     def test_record_dataclass_methods(self):
         """Test dataclass auto-generated methods."""
@@ -151,14 +160,18 @@ class TestMigrationRecord:
             version="20240101_120000",
             name="test",
             applied_at=now,
-            status=MigrationStatus.APPLIED
+            status=MigrationStatus.APPLIED,
+            checksum="same123",
+            execution_time=1.5
         )
         
         record2 = MigrationRecord(
             version="20240101_120000",
             name="test",
             applied_at=now,
-            status=MigrationStatus.APPLIED
+            status=MigrationStatus.APPLIED,
+            checksum="same123",
+            execution_time=1.5
         )
         
         # Test equality
@@ -178,14 +191,18 @@ class TestMigrationRecord:
             version="20240101_120000",
             name="test",
             applied_at=now,
-            status=MigrationStatus.APPLIED
+            status=MigrationStatus.APPLIED,
+            checksum="diff123",
+            execution_time=1.5
         )
         
         record2 = MigrationRecord(
             version="20240101_130000",
             name="test",
             applied_at=now,
-            status=MigrationStatus.APPLIED
+            status=MigrationStatus.APPLIED,
+            checksum="diff123",
+            execution_time=1.5
         )
         
         assert record1 != record2

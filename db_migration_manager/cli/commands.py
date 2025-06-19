@@ -3,10 +3,14 @@ CLI commands for migration management
 """
 
 import asyncio
+import importlib.util
 import os
-from typing import Optional
+import sys
+from pathlib import Path
+from typing import Optional, List, Type
 
 import click
+from pydantic import BaseModel
 
 from ..adapters.postgresql import PostgreSQLAdapter
 from ..adapters.mysql import MySQLAdapter
@@ -185,6 +189,197 @@ def create(ctx, name: str, up_sql: str, down_sql: str):
                 await manager.close()
     
     asyncio.run(async_create())
+
+
+@cli.command()
+@click.argument('name')
+@click.argument('models_module')
+@click.option('--models', multiple=True, help='Specific model class names to include')
+@click.option('--no-auto-diff', is_flag=True, help='Disable auto-diff with previous snapshot')
+@click.pass_context
+def create_from_models(ctx, name: str, models_module: str, models: tuple, no_auto_diff: bool):
+    """Create a migration from Pydantic models
+    
+    Examples:
+        db-migrate create-from-models create_users app.models
+        db-migrate create-from-models add_profile app.models --models User --models Profile
+    """
+    async def async_create_from_models():
+        manager = None
+        try:
+            # Load the models module
+            pydantic_models = load_models_from_module(models_module, list(models) if models else None)
+            
+            if not pydantic_models:
+                click.echo("No Pydantic models found in the specified module")
+                ctx.exit(1)
+            
+            # Validate models first
+            manager = await get_migration_manager(ctx)
+            validation = manager.validate_models_schema(pydantic_models)
+            
+            if validation['errors']:
+                click.echo("Model validation errors:")
+                for error in validation['errors']:
+                    click.secho(f"  ❌ {error}", fg='red')
+                ctx.exit(1)
+            
+            if validation['warnings']:
+                click.echo("Model validation warnings:")
+                for warning in validation['warnings']:
+                    click.secho(f"  ⚠️ {warning}", fg='yellow')
+            
+            # Create migration
+            filepath = await manager.create_migration_from_models(
+                name=name,
+                models=pydantic_models,
+                auto_diff=not no_auto_diff
+            )
+            
+            click.echo(f"Created migration from {len(pydantic_models)} models: {filepath}")
+            click.echo("Models included:")
+            for model in pydantic_models:
+                table_name = getattr(model, '__table_name__', model.__name__.lower())
+                click.echo(f"  - {model.__name__} -> {table_name}")
+            
+        except Exception as e:
+            click.echo(f"Error: {e}", err=True)
+            ctx.exit(1)
+        finally:
+            if manager:
+                await manager.close()
+    
+    asyncio.run(async_create_from_models())
+
+
+@cli.command()
+@click.argument('models_module')
+@click.option('--models', multiple=True, help='Specific model class names to validate')
+@click.pass_context
+def validate_models(ctx, models_module: str, models: tuple):
+    """Validate Pydantic models for database compatibility"""
+    async def async_validate():
+        manager = None
+        try:
+            # Load the models module
+            pydantic_models = load_models_from_module(models_module, list(models) if models else None)
+            
+            if not pydantic_models:
+                click.echo("No Pydantic models found in the specified module")
+                ctx.exit(1)
+            
+            manager = await get_migration_manager(ctx)
+            validation = manager.validate_models_schema(pydantic_models)
+            
+            click.echo(f"Validation results for {len(pydantic_models)} models:")
+            
+            if validation['errors']:
+                click.echo("\n❌ Errors:")
+                for error in validation['errors']:
+                    click.secho(f"  {error}", fg='red')
+            
+            if validation['warnings']:
+                click.echo("\n⚠️ Warnings:")
+                for warning in validation['warnings']:
+                    click.secho(f"  {warning}", fg='yellow')
+            
+            if validation['info']:
+                click.echo("\n✅ Validated models:")
+                for info in validation['info']:
+                    click.secho(f"  {info}", fg='green')
+            
+            if validation['errors']:
+                ctx.exit(1)
+            else:
+                click.secho("\n✅ All models are valid!", fg='green')
+            
+        except Exception as e:
+            click.echo(f"Error: {e}", err=True)
+            ctx.exit(1)
+        finally:
+            if manager:
+                await manager.close()
+    
+    asyncio.run(async_validate())
+
+
+@cli.command()
+@click.argument('model_class')
+@click.argument('models_module')
+@click.option('--dialect', default='postgresql', type=click.Choice(['postgresql', 'mysql', 'sqlite']),
+              help='Database dialect')
+@click.pass_context 
+def show_sql(ctx, model_class: str, models_module: str, dialect: str):
+    """Show the SQL that would be generated for a Pydantic model"""
+    try:
+        # Load specific model
+        models = load_models_from_module(models_module, [model_class])
+        
+        if not models:
+            click.echo(f"Model '{model_class}' not found in module '{models_module}'")
+            ctx.exit(1)
+        
+        model = models[0]
+        
+        # Generate SQL
+        create_sql = model.generate_table_sql(dialect)
+        drop_sql = model.generate_drop_sql(dialect)
+        
+        click.echo(f"SQL for model '{model.__name__}' (dialect: {dialect}):")
+        click.echo("\nCREATE TABLE:")
+        click.secho(create_sql, fg='green')
+        click.echo("\nDROP TABLE:")
+        click.secho(drop_sql, fg='red')
+        
+    except Exception as e:
+        click.echo(f"Error: {e}", err=True)
+        ctx.exit(1)
+
+
+def load_models_from_module(module_path: str, model_names: Optional[List[str]] = None) -> List[Type[BaseModel]]:
+    """Load Pydantic models from a Python module"""
+    try:
+        # Add current directory to Python path if not already there
+        current_dir = str(Path.cwd())
+        if current_dir not in sys.path:
+            sys.path.insert(0, current_dir)
+        
+        # Import the module
+        if '.' in module_path:
+            # Import as package.module
+            module = importlib.import_module(module_path)
+        else:
+            # Import as file path
+            module_file = Path(module_path)
+            if not module_file.exists():
+                module_file = Path(f"{module_path}.py")
+            
+            if not module_file.exists():
+                raise ImportError(f"Module file not found: {module_path}")
+            
+            spec = importlib.util.spec_from_file_location("models", module_file)
+            module = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(module)
+        
+        # Find Pydantic models in the module
+        models = []
+        for attr_name in dir(module):
+            if model_names and attr_name not in model_names:
+                continue
+                
+            attr = getattr(module, attr_name)
+            if (isinstance(attr, type) and 
+                issubclass(attr, BaseModel) and 
+                attr != BaseModel and
+                attr.__name__ != 'DatabaseModel' and  # Filter out our base class
+                hasattr(attr, 'model_fields') and  # Must have actual fields
+                len(attr.model_fields) > 0):  # Must have at least one field
+                models.append(attr)
+        
+        return models
+        
+    except Exception as e:
+        raise ImportError(f"Failed to load models from '{module_path}': {e}")
 
 
 if __name__ == '__main__':

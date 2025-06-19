@@ -5,6 +5,53 @@ All notable changes to the db-migration-manager project will be documented in th
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.0.0] - 2024-01-XX
+
+### Added
+- **Pydantic Model Support**: Complete integration for creating migrations from Pydantic models
+  - `PydanticMigration` class for model-based migrations
+  - `PydanticSchemaGenerator` for converting models to SQL DDL
+  - `SchemaComparator` for automatic schema diffing
+  - `DatabaseModel` base class with database-specific functionality
+  - Database field annotations: `primary_key()`, `unique_field()`, `indexed_field()`, `db_field()`
+  - Support for all major Python types with automatic SQL type mapping
+  - JSON field support (JSONB for PostgreSQL, JSON for MySQL, TEXT for SQLite)
+  - Enum support with VARCHAR storage
+  - Custom table naming via `__table_name__` attribute
+
+- **Extended Migration Manager**: 
+  - `create_migration_from_models()` method for generating migrations from Pydantic models
+  - `validate_models_schema()` method for model validation
+  - Automatic schema snapshots for migration diffing
+  - Support for auto-diff generation between model versions
+
+- **Enhanced CLI Commands**:
+  - `create-from-models` - Create migrations from Pydantic models
+  - `validate-models` - Validate Pydantic models for database compatibility  
+  - `show-sql` - Display generated SQL for models
+  - Support for loading models from Python modules
+
+- **Extended FastAPI API**:
+  - `/migrations/create-from-models` endpoint
+  - `/migrations/validate-models` endpoint  
+  - `/migrations/show-sql` endpoint
+  - Enhanced request/response models for Pydantic integration
+
+- **Type Mapping System**: Comprehensive type mapping for PostgreSQL, MySQL, and SQLite
+- **Index and Constraint Support**: Full support for database indexes and constraints via annotations
+- **Schema Validation**: Built-in validation for model compatibility and best practices
+
+### Changed
+- Added Pydantic as a core dependency
+- Extended all adapters to work seamlessly with generated SQL
+- Enhanced migration file generation to support Pydantic migrations
+- Improved error handling and validation throughout the system
+
+### Dependencies
+- Added `pydantic>=2.0.0` as core dependency
+- All existing dependencies remain unchanged
+- Maintains backward compatibility with existing migration workflows
+
 ## [1.1.0] - 2024-12-19
 
 ### Added

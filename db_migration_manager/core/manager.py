@@ -6,11 +6,15 @@ import re
 import importlib.util
 from datetime import datetime
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Type
+
+from pydantic import BaseModel
 
 from ..adapters.base import DatabaseAdapter
 from .migration import Migration
 from .models import MigrationRecord, MigrationStatus
+from .pydantic_migration import PydanticMigration, create_migration_from_models
+from .schema import PydanticSchemaGenerator
 
 
 class MigrationManager:
@@ -20,6 +24,8 @@ class MigrationManager:
         self.db_adapter = db_adapter
         self.migrations_dir = Path(migrations_dir)
         self.migrations_dir.mkdir(exist_ok=True)
+        self.snapshots_dir = Path(migrations_dir) / "snapshots"
+        self.snapshots_dir.mkdir(exist_ok=True)
     
     async def initialize(self):
         """Initialize migration system"""
@@ -115,8 +121,13 @@ class MigrationManager:
         try:
             await self.db_adapter.begin_transaction()
             
-            # Execute migration
-            await self.db_adapter.execute_sql(migration.up())
+            # Execute migration - handle multi-statement SQL
+            migration_sql = migration.up()
+            if migration_sql:
+                # Split SQL into individual statements if needed
+                statements = [stmt.strip() for stmt in migration_sql.split(';') if stmt.strip()]
+                for statement in statements:
+                    await self.db_adapter.execute_sql(statement)
             
             # Record migration with parameterized query
             record = MigrationRecord(
@@ -265,3 +276,221 @@ class MigrationManager:
     async def close(self):
         """Close database connection"""
         await self.db_adapter.close()
+    
+    # Pydantic model support methods
+    
+    async def create_migration_from_models(
+        self, 
+        name: str, 
+        models: List[Type[BaseModel]], 
+        auto_diff: bool = True
+    ) -> str:
+        """Create a migration from Pydantic models"""
+        version = datetime.now().strftime("%Y%m%d_%H%M%S")
+        
+        # Get database dialect from adapter
+        dialect = self._get_dialect_from_adapter()
+        
+        # Create Pydantic migration
+        previous_snapshot = None
+        if auto_diff:
+            previous_snapshot = self._get_latest_snapshot()
+        
+        migration = create_migration_from_models(
+            models=models,
+            version=version,
+            name=name,
+            dialect=dialect,
+            previous_snapshot=previous_snapshot
+        )
+        
+        # Save migration file
+        filename = f"{version}_{name}.py"
+        filepath = self.migrations_dir / filename
+        
+        migration_content = self._generate_pydantic_migration_file(migration, models)
+        
+        with open(filepath, 'w') as f:
+            f.write(migration_content)
+        
+        # Save models snapshot
+        snapshot_path = self.snapshots_dir / f"{version}_{name}.json"
+        migration.save_models_snapshot(str(snapshot_path))
+        
+        return str(filepath)
+    
+    def _get_dialect_from_adapter(self) -> str:
+        """Determine database dialect from adapter type"""
+        adapter_type = type(self.db_adapter).__name__.lower()
+        
+        if 'postgresql' in adapter_type:
+            return 'postgresql'
+        elif 'mysql' in adapter_type:
+            return 'mysql'
+        elif 'sqlite' in adapter_type:
+            return 'sqlite'
+        else:
+            return 'postgresql'  # Default fallback
+    
+    def _get_latest_snapshot(self) -> Optional[str]:
+        """Get the path to the latest models snapshot"""
+        snapshots = list(self.snapshots_dir.glob("*.json"))
+        if not snapshots:
+            return None
+        
+        # Sort by filename (which includes timestamp)
+        latest = sorted(snapshots)[-1]
+        return str(latest)
+    
+    def _generate_pydantic_migration_file(
+        self, 
+        migration: PydanticMigration, 
+        models: List[Type[BaseModel]]
+    ) -> str:
+        """Generate migration file content for Pydantic migration"""
+        # For models defined in __main__ or test scripts, 
+        # we'll generate the migration with embedded SQL instead of model imports
+        has_main_module = any(model.__module__ == '__main__' for model in models)
+        
+        if has_main_module:
+            # Generate simple migration with embedded SQL
+            content = f'''"""
+Migration: {migration.name}
+Created: {datetime.now().isoformat()}
+Generated from Pydantic models
+"""
+
+from db_migration_manager import Migration
+
+
+class {self._to_class_name(migration.name)}(Migration):
+    def __init__(self):
+        super().__init__("{migration.version}", "{migration.name}")
+        self.up_sql = """{migration.up_sql}"""
+        self.down_sql = """{migration.down_sql}"""
+'''
+        else:
+            # Generate full Pydantic migration with model imports
+            model_imports = []
+            model_names = []
+            
+            for model in models:
+                module_name = model.__module__
+                class_name = model.__name__
+                model_imports.append(f"from {module_name} import {class_name}")
+                model_names.append(class_name)
+            
+            imports_str = "\n".join(model_imports)
+            models_list = ", ".join(model_names)
+            
+            content = f'''"""
+Migration: {migration.name}
+Created: {datetime.now().isoformat()}
+Generated from Pydantic models: {models_list}
+"""
+
+from db_migration_manager import PydanticMigration
+{imports_str}
+
+
+class {self._to_class_name(migration.name)}(PydanticMigration):
+    def __init__(self):
+        super().__init__("{migration.version}", "{migration.name}")
+        self.models = [{models_list}]
+        self.dialect = "{migration.dialect}"
+        self.up_sql = """{migration.up_sql}"""
+        self.down_sql = """{migration.down_sql}"""
+'''
+        
+        return content
+    
+    async def generate_models_from_database(self) -> str:
+        """Generate Pydantic models from existing database schema"""
+        # This would introspect the database and generate Pydantic models
+        # This is a complex feature that would require significant development
+        # For now, we'll provide a placeholder
+        raise NotImplementedError(
+            "Database introspection to generate Pydantic models is not yet implemented. "
+            "Please define your models manually using Pydantic."
+        )
+    
+    async def auto_generate_migration(self, name: str, models_module: str) -> str:
+        """Auto-generate migration by comparing current models with database schema"""
+        # This would:
+        # 1. Load all Pydantic models from the specified module
+        # 2. Compare with current database schema
+        # 3. Generate migration automatically
+        raise NotImplementedError(
+            "Auto-migration generation is not yet implemented. "
+            "Please use create_migration_from_models() with explicit model lists."
+        )
+    
+    def validate_models_schema(self, models: List[Type[BaseModel]]) -> Dict[str, List[str]]:
+        """Validate Pydantic models for database compatibility"""
+        dialect = self._get_dialect_from_adapter()
+        generator = PydanticSchemaGenerator(dialect)
+        
+        validation_results = {
+            'errors': [],
+            'warnings': [],
+            'info': []
+        }
+        
+        table_names = set()
+        
+        for model in models:
+            # Check for duplicate table names
+            table_name = getattr(model, '__table_name__', model.__name__.lower())
+            if table_name in table_names:
+                validation_results['errors'].append(
+                    f"Duplicate table name '{table_name}' found in models"
+                )
+            table_names.add(table_name)
+            
+            # Generate table definition to check for issues
+            try:
+                table_def = generator.generate_table_from_model(model)
+                
+                # Check for primary key
+                has_pk = any(col.primary_key for col in table_def.columns)
+                if not has_pk:
+                    validation_results['warnings'].append(
+                        f"Model '{model.__name__}' has no primary key defined"
+                    )
+                
+                # Check for supported field types
+                for field_name, field_info in model.model_fields.items():
+                    # Use the same logic as _field_to_column to get the actual field type
+                    field_type = field_info.annotation
+                    
+                    # Handle Optional types the same way as _field_to_column
+                    from typing import get_origin, get_args, Union
+                    if get_origin(field_type) is Union:
+                        args = get_args(field_type)
+                        if len(args) == 2 and type(None) in args:
+                            # This is Optional[T], extract the actual type
+                            field_type = args[0] if args[1] is type(None) else args[1]
+                    
+                    sql_type = generator._python_type_to_sql(field_type, field_info)
+                    
+                    # Only warn if it's truly an unsupported type (not Optional wrapper)
+                    if sql_type == 'TEXT' and field_type not in [str, dict, list]:
+                        # Check if it's a known type that should be supported
+                        from datetime import datetime
+                        from decimal import Decimal
+                        if field_type not in [str, int, float, bool, datetime, Decimal, dict, list]:
+                            validation_results['warnings'].append(
+                                f"Field '{field_name}' in '{model.__name__}' uses unsupported type "
+                                f"'{field_type}' and will be stored as TEXT"
+                            )
+                
+                validation_results['info'].append(
+                    f"Model '{model.__name__}' -> table '{table_name}' validated successfully"
+                )
+                
+            except Exception as e:
+                validation_results['errors'].append(
+                    f"Failed to validate model '{model.__name__}': {str(e)}"
+                )
+        
+        return validation_results

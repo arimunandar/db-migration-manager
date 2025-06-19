@@ -2,7 +2,7 @@
 API response models for FastAPI integration
 """
 
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, List
 from pydantic import BaseModel
 
 
@@ -38,3 +38,24 @@ class MigrateRequest(BaseModel):
 class RollbackRequest(BaseModel):
     """Request model for rolling back migrations"""
     target_version: str
+
+
+class CreateFromModelsRequest(BaseModel):
+    """Request model for creating migrations from Pydantic models"""
+    name: str
+    models_module: str
+    model_names: Optional[List[str]] = None
+    auto_diff: bool = True
+
+
+class ValidateModelsRequest(BaseModel):
+    """Request model for validating Pydantic models"""
+    models_module: str
+    model_names: Optional[List[str]] = None
+
+
+class ShowSQLRequest(BaseModel):
+    """Request model for showing SQL for a model"""
+    model_class: str
+    models_module: str
+    dialect: str = "postgresql"
